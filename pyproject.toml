@@ -10,5 +10,6 @@ dependencies = [
     "iperf3>=0.1.11",
     "napalm>=5.1.0",
     "pyyaml>=6.0.3",
+    "ruff>=0.15.7",
     "scapy>=2.7.0",
 ]
