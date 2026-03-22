@@ -77,6 +77,8 @@ def switch_ssh_from_secrets(
 class FunctionalTestConfig:
     """Lab-specific addressing and thresholds for all functional tests."""
 
+    lab_secrets: LabSecrets | None = None
+
     interface: str = "ens18"
     src_mac: str = "00:00:00:00:00:01"
     dst_mac: str = "00:00:00:00:00:02"
@@ -133,12 +135,11 @@ def vlan_isolation(
     cfg = config or FunctionalTestConfig()
 
     # FIXME: The host address, and interfaces are hardcoded, this should be configurable.
-    secrets = load_lab_secrets()
     device: dict[str, Any] = {
         "device_type": "cisco_ios",
         "host": "10.0.0.2",
-        "username": secrets.username,
-        "password": secrets.password,
+        "username": cfg.lab_secrets.username,
+        "password": cfg.lab_secrets.password,
         "port": 22,
     }
     try:
@@ -208,7 +209,6 @@ def vlan_isolation(
 
 def mac_learning(
     engine: ScapyEngine,
-    switch_ssh: SwitchSSHConfig,
     config: FunctionalTestConfig | None = None,
     telemetry: TelemetryConfig | None = None,
 ) -> dict[str, Any]:
@@ -218,13 +218,16 @@ def mac_learning(
     then sends a single frame and checks that it arrives without flooding.
     """
     cfg = config or FunctionalTestConfig()
+
+    switch_ssh = switch_ssh_from_secrets(host="10.0.0.2", secrets=cfg.lab_secrets)
+
     t0 = time.monotonic()
 
     with snapshot_telemetry(telemetry) as telem:
         burst_result = engine.send_burst(
             interface=cfg.interface,
             src_mac=cfg.src_mac,
-            dst_mac=cfg.dst_mac,
+            dst_mac="ff:ff:ff:ff:ff:ff",
             src_ip=cfg.src_ip,
             dst_ip=cfg.dst_ip,
             protocol=cfg.protocol,
