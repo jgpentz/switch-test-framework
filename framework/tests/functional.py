@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from netmiko import ConnectHandler
+
 from framework.lab_secrets import LabSecrets, load_lab_secrets
 from framework.telemetry.cisco_snmp import (
     get_mac_address_table_ssh,
@@ -84,7 +86,7 @@ class FunctionalTestConfig:
     frame_size: int = 128
 
     # VLAN Isolation
-    send_vlan: int = 20
+    send_vlan: int = 21
     expected_vlan: int = 20
 
     # MAC Learning
@@ -130,24 +132,58 @@ def vlan_isolation(
     """
     cfg = config or FunctionalTestConfig()
 
-    t0 = time.monotonic()
+    # FIXME: The host address, and interfaces are hardcoded, this should be configurable.
+    secrets = load_lab_secrets()
+    device: dict[str, Any] = {
+        "device_type": "cisco_ios",
+        "host": "10.0.0.2",
+        "username": secrets.username,
+        "password": secrets.password,
+        "port": 22,
+    }
+    try:
+        with ConnectHandler(**device) as conn:
+            conn.enable()
 
-    with snapshot_telemetry(telemetry) as telem:
-        result = engine.check_vlan_isolation(
-            interface=cfg.interface,
-            src_mac=cfg.src_mac,
-            dst_mac=cfg.dst_mac,
-            src_ip=cfg.src_ip,
-            dst_ip=cfg.dst_ip,
-            protocol=cfg.protocol,
-            size=cfg.frame_size,
-            vlan=cfg.send_vlan,
-            expected_vlan=cfg.expected_vlan,
-            capture_timeout=cfg.capture_timeout,
-        )
+            cmds = [
+                "interface g1/0/5",
+                f"switchport access vlan {cfg.send_vlan}",
+                "exit",
+            ]
 
-    passed = result["status"] == "pass"
-    elapsed = time.monotonic() - t0
+            conn.send_config_set(cmds)
+
+        t0 = time.monotonic()
+
+        with snapshot_telemetry(telemetry) as telem:
+            result = engine.send_and_capture(
+                interface=cfg.interface,
+                src_mac=cfg.src_mac,
+                dst_mac=cfg.dst_mac,
+                src_ip=cfg.src_ip,
+                dst_ip=cfg.dst_ip,
+                protocol=cfg.protocol,
+                size=cfg.frame_size,
+                count=1,
+                capture_timeout=cfg.capture_timeout,
+            )
+        capture = result["capture_result"]
+        # FIXME: vlan match count is not working because the ports are access ports
+        # isolation_ok = int(capture.get("vlan_match_count", 0)) == 0
+        isolation_ok = len(capture['packets']) == 0
+        passed = isolation_ok
+        elapsed = time.monotonic() - t0
+    finally:
+        # FIXME: The host address, and interfaces are hardcoded, this should be configurable.
+        with ConnectHandler(**device) as conn:
+            conn.enable()
+            cmds = [
+                "interface g1/0/5",
+                "switchport access vlan 20",
+                "exit",
+            ]
+            conn.send_config_set(cmds)
+
     return {
         "test": "vlan_isolation",
         "passed": passed,
@@ -155,13 +191,13 @@ def vlan_isolation(
         "duration_sec": round(elapsed, 3),
         "switch_counter_delta": telem["switch_counter_delta"],
         "details": {
-            "sent_vlan": result["sent_vlan"],
-            "expected_vlan": result["expected_vlan"],
-            "frames_received": result["frames_received"],
-            "vlan_match_count": result["vlan_match_count"],
-            "vlan_mismatch_count": result["vlan_mismatch_count"],
+            "sent_vlan": cfg.send_vlan,
+            "expected_vlan": cfg.expected_vlan,
+            "frames_received": capture.get("frames_received", 0),
+            "vlan_match_count": capture.get("vlan_match_count", 0),
+            "vlan_mismatch_count": capture.get("vlan_mismatch_count", 0),
         },
-        "evidence": result["evidence"],
+        "evidence": result,
     }
 
 
