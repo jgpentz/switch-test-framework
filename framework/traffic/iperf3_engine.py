@@ -227,10 +227,26 @@ class IPerf3Engine:
                 ("end", "sum_received", "seconds"),
                 ("end", "sum_sent", "seconds"),
             ),
+            "bytes": self._get_optional_first(
+                data,
+                ("end", "sum", "bytes"),
+                ("end", "sum_received", "bytes"),
+                ("end", "sum_sent", "bytes"),
+            ),
+            "packets": self._get_optional_first(
+                data,
+                ("end", "sum", "packets"),
+                ("end", "sum_received", "packets"),
+                ("end", "sum_sent", "packets"),
+            ),
         }
 
     def run_tcp(
-        self, server_ip: str, duration: int = 30, parallel: int = 4
+        self,
+        server_ip: str,
+        duration: int = 30,
+        parallel: int = 4,
+        include_raw_json: bool = False,
     ) -> dict[str, Any]:
         """Run an iperf3 TCP throughput test.
 
@@ -238,6 +254,7 @@ class IPerf3Engine:
             server_ip: iperf3 server IP to connect to.
             duration: Test duration in seconds.
             parallel: Number of parallel TCP streams (`-P`).
+            include_raw_json: If True, attach raw iperf3 JSON stdout as ``raw_json``.
 
         Returns:
             Structured result dict with required fields:
@@ -260,7 +277,8 @@ class IPerf3Engine:
             str(parallel),
             "--json",
         ]
-        data = self._parse_json(self._run_iperf3(iperf3_cmd))
+        raw_stdout = self._run_iperf3(iperf3_cmd)
+        data = self._parse_json(raw_stdout)
         metrics = self._extract_end_sum_metrics(data)
 
         try:
@@ -278,7 +296,7 @@ class IPerf3Engine:
             float(duration_raw) if duration_raw is not None else float(duration)
         )
 
-        return {
+        result = {
             "bitrate_bps": bitrate_bps,
             "retransmits": retransmits,
             "lost_packets": 0,
@@ -289,6 +307,9 @@ class IPerf3Engine:
             "duration_sec": duration_sec,
             "timestamp": timestamp,
         }
+        if include_raw_json:
+            result["raw_json"] = raw_stdout
+        return result
 
     def run_udp(
         self,
@@ -296,6 +317,8 @@ class IPerf3Engine:
         bitrate: str,
         duration: int = 30,
         parallel: int = 1,
+        length: int | None = None,
+        include_raw_json: bool = False,
     ) -> dict[str, Any]:
         """Run an iperf3 UDP test at a requested bitrate.
 
@@ -304,6 +327,8 @@ class IPerf3Engine:
             bitrate: Requested UDP bitrate string (e.g. ``"500M"``, ``"1G"``).
             duration: Test duration in seconds.
             parallel: Number of parallel UDP streams (`-P`).
+            length: UDP datagram payload size in bytes (iperf3 ``-l``).
+            include_raw_json: If True, attach raw iperf3 JSON stdout as ``raw_json``.
 
         Returns:
             Structured result dict with required fields:
@@ -329,7 +354,10 @@ class IPerf3Engine:
             str(parallel),
             "--json",
         ]
-        data = self._parse_json(self._run_iperf3(iperf3_cmd))
+        if length is not None:
+            iperf3_cmd.extend(["-l", str(length)])
+        raw_stdout = self._run_iperf3(iperf3_cmd)
+        data = self._parse_json(raw_stdout)
         metrics = self._extract_end_sum_metrics(data)
 
         try:
@@ -353,7 +381,7 @@ class IPerf3Engine:
             float(duration_raw) if duration_raw is not None else float(duration)
         )
 
-        return {
+        result = {
             "bitrate_bps": bitrate_bps,
             "retransmits": 0,
             "lost_packets": lost_packets,
@@ -364,12 +392,17 @@ class IPerf3Engine:
             "duration_sec": duration_sec,
             "timestamp": timestamp,
         }
+        if include_raw_json:
+            result["raw_json"] = raw_stdout
+        return result
 
     def run_stepwise_udp(
         self,
         server_ip: str,
         bitrate_steps: list[str],
         duration: int = 30,
+        length: int | None = None,
+        include_raw_json: bool = False,
     ) -> list[dict[str, Any]]:
         """Run a UDP test for each bitrate step and return all step results.
 
@@ -377,6 +410,8 @@ class IPerf3Engine:
             server_ip: iperf3 server IP to connect to.
             bitrate_steps: Ordered list of requested UDP bitrate strings.
             duration: Duration (seconds) for each step.
+            length: UDP datagram payload size in bytes (iperf3 ``-l``).
+            include_raw_json: If True, attach raw iperf3 JSON stdout as ``raw_json``.
 
         Returns:
             List of UDP result dicts (one per bitrate step), suitable for
@@ -390,6 +425,8 @@ class IPerf3Engine:
                     server_ip=server_ip,
                     bitrate=step,
                     duration=duration,
+                    length=length,
+                    include_raw_json=include_raw_json,
                 )
             )
         return results

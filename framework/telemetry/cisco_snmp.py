@@ -263,5 +263,5 @@ if __name__ == "__main__":
         "10.0.0.2", "jimmy", "lab123", secret="lab123"
     )
     print(json.dumps(mac_table["entries"], indent=4))
-    # interface_counters = get_interface_counters("10.0.0.2", "network-test", "GigabitEthernet1/0/5")
-    # print(json.dumps(interface_counters, indent=4))
+    interface_counters = get_interface_counters("10.0.0.2", "network-test", "GigabitEthernet1/0/5")
+    print(json.dumps(interface_counters, indent=4))
