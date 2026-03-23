@@ -4,7 +4,7 @@
 
 This project is a Python-based network test harness for validating switch behavior and benchmarking forwarding performance in a lab environment.
 
-![block diagram](/drawings/block_diagram.png "Block Diagram")
+![Block diagram](/drawings/block_diagram.png "Block Diagram")
 
 It runs two test suites:
 
@@ -13,46 +13,9 @@ It runs two test suites:
 
 Each run writes structured JSON outputs into a timestamped `results/<timestamp>/` folder, and can generate a self-contained HTML report under `reports/`.
 
-## Architecture (ASCII Diagram)
+## Architecture
 
-```text
-                         +---------------------------+
-                         |         main.py           |
-                         |  - run_tests()            |
-                         |  - --report mode          |
-                         +-------------+-------------+
-                                       |
-                     +-----------------+-----------------+
-                     |                                   |
-                     v                                   v
-        +---------------------------+       +------------------------------+
-        | RFC2544 Test Suite        |       | Functional Test Suite        |
-        | framework/tests/rfc2544.py|       | framework/tests/functional.py|
-        +-------------+-------------+       +-------------+----------------+
-                      |                                   |
-             +--------+---------+              +----------+----------+
-             |                  |              |                     |
-             v                  v              v                     v
-   +-------------------+  +----------------+  +----------------+  +----------------+
-   | IPerf3Engine      |  | SNMP Telemetry |  | ScapyEngine    |  | Netmiko/SNMP   |
-   | traffic/iperf3... |  | telemetry/...  |  | traffic/scapy..|  | + switch state |
-   +-------------------+  +----------------+  +----------------+  +----------------+
-                      \                                   /
-                       \                                 /
-                        +-------------------------------+
-                        | JSON test artifacts           |
-                        | results/<timestamp>/*.json    |
-                        +---------------+---------------+
-                                        |
-                                        v
-                         +-------------------------------+
-                         | ReportGenerator (Jinja+Plotly)|
-                         | framework/reporting/...       |
-                         +---------------+---------------+
-                                         |
-                                         v
-                          reports/<timestamp>_report.html
-```
+![Architecture](/drawings/architecture.png)
 
 ## Setup
 
