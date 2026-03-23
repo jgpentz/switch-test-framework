@@ -15,7 +15,27 @@ Each run writes structured JSON outputs into a timestamped `results/<timestamp>/
 
 ## Architecture
 
-![Architecture](/drawings/architecture.png)
+```mermaid
+graph TD
+    A["<b>main.py</b><br>run_tests()<br>--report-mode"]
+    
+    B["<b>RFC2544 Test Suite</b><br><br>• Throughput Test<br>• Latency Test<br>• Frame Loss Test<br>• Back to Back Test<br><br>[ IPerf3Engine ] <br> [ SNMP Telemetry ]"]
+    
+    C["<b>Functional Test Suite</b><br><br>• VLAN Isolation Test<br>• MAC Learning Test<br>• Jumbo Frames Test<br>• 802.1Q Tagging Test<br>• STP Convergence Test<br>• ACL Enforcement Test<br><br>[ ScapyEngine ] <br> [ Netmiko ] <br> [ SNMP Telemetry ]"]
+    
+    D["<b>JSON Test Artifacts</b><br><br>results/&lt;timestamp&gt;/*.json"]
+    
+    E["<b>HTML Report Generator</b><br><br>Jinja 2 + Plotly"]
+    
+    F["<b>HTML Report</b>"]
+    
+    A --> B
+    A --> C
+    B --> D
+    C --> D
+    D --> E
+    E --> F
+```
 
 ## Setup
 
