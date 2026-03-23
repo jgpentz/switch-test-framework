@@ -209,7 +209,9 @@ def test_latency_per_frame_structure() -> None:
     )
     throughput_map = {fs: 800_000_000 for fs in RFC2544_FRAME_SIZES}
 
-    result = latency(engine, "172.16.0.2", throughput_results=throughput_map, config=cfg)
+    result = latency(
+        engine, "172.16.0.2", throughput_results=throughput_map, config=cfg
+    )
 
     assert result["test"] == "latency"
     per_frame = result["details"]["per_frame_size_results"]

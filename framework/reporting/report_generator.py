@@ -134,8 +134,14 @@ class ReportGenerator:
         return self._plot(fig)
 
     _FRAME_LOSS_COLORS = [
-        "#dc2626", "#2563eb", "#16a34a", "#d97706",
-        "#7c3aed", "#db2777", "#0891b2", "#65a30d",
+        "#dc2626",
+        "#2563eb",
+        "#16a34a",
+        "#d97706",
+        "#7c3aed",
+        "#db2777",
+        "#0891b2",
+        "#65a30d",
     ]
 
     def build_frame_loss_chart(self, data: dict) -> str:

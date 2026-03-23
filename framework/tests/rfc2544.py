@@ -174,7 +174,9 @@ def throughput(
                         "frame_size": frame_size,
                         "iteration": iteration + 1,
                         "offered_bitrate_bps": mid,
-                        "offered_bitrate_pct": round(mid / cfg.link_capacity_bps * 100, 4),
+                        "offered_bitrate_pct": round(
+                            mid / cfg.link_capacity_bps * 100, 4
+                        ),
                         "achieved_bitrate_bps": result["bitrate_bps"],
                         "lost_percent": lost,
                     }
@@ -253,7 +255,9 @@ def latency(
             throughput_bps = throughput_results.get(frame_size, 0.0)
             if throughput_bps <= 0:
                 continue
-            print(f"  Latency @ {frame_size} B  (throughput {throughput_bps/1e6:.1f} Mbps)")
+            print(
+                f"  Latency @ {frame_size} B  (throughput {throughput_bps / 1e6:.1f} Mbps)"
+            )
 
             load_results: list[dict[str, Any]] = []
             for load_pct in cfg.latency_load_pcts:
@@ -275,9 +279,7 @@ def latency(
 
                 avg = statistics.mean(jitter_samples)
                 std = (
-                    statistics.stdev(jitter_samples)
-                    if len(jitter_samples) > 1
-                    else 0.0
+                    statistics.stdev(jitter_samples) if len(jitter_samples) > 1 else 0.0
                 )
                 load_results.append(
                     {

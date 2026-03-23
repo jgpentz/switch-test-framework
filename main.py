@@ -190,7 +190,9 @@ def run_tests() -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
 
     run_rfc2544_tests(iperf3_engine, rfc2544_config, results_dir)
-    run_functional_tests(scapy_engine, iperf3_engine, functional_test_config, results_dir)
+    run_functional_tests(
+        scapy_engine, iperf3_engine, functional_test_config, results_dir
+    )
 
 
 def main() -> None:
