@@ -82,6 +82,7 @@ class FunctionalTestConfig:
     dst_ip: str = "172.16.0.2"
     protocol: str = "udp"
     frame_size: int = 128
+    switch_mgmt_ip: str = "10.0.0.2"
 
     # VLAN Isolation
     send_vlan: int = 21
@@ -107,7 +108,6 @@ class FunctionalTestConfig:
     link_capacity_bps: float = 1_000_000_000
 
     # ACL (Netmiko: extended ACL on ingress toward the DUT)
-    acl_switch_mgmt_ip: str = "10.0.0.2"
     acl_ingress_interface: str = "GigabitEthernet1/0/5"
     acl_name: str = "NTF_ACL_TEST"
 
@@ -207,7 +207,6 @@ def vlan_isolation(
 
 def mac_learning(
     engine: ScapyEngine,
-    switch_ssh: SwitchSSHConfig,
     config: FunctionalTestConfig | None = None,
     telemetry: TelemetryConfig | None = None,
 ) -> dict[str, Any]:
@@ -217,6 +216,9 @@ def mac_learning(
     then sends a single frame and checks that it arrives without flooding.
     """
     cfg = config or FunctionalTestConfig()
+    switch_ssh = switch_ssh_from_secrets(
+        host=cfg.switch_mgmt_ip, secrets=cfg.lab_secrets
+    )
 
     t0 = time.monotonic()
 
@@ -484,7 +486,6 @@ def stp_convergence(
         while time.monotonic() < deadline:
             time.sleep(cfg.stp_poll_interval_sec)
             i += 1
-            print(i)
             current = poll_interface_counters(
                 telemetry.switch_ip, telemetry.community, telemetry.interface
             )
@@ -576,7 +577,7 @@ def acl_enforcement(
     evidence: dict[str, Any] = {}
 
     switch_ssh = switch_ssh_from_secrets(
-        host=cfg.acl_switch_mgmt_ip, secrets=cfg.lab_secrets
+        host=cfg.switch_mgmt_ip, secrets=cfg.lab_secrets
     )
     apply_cmds = _acl_apply_commands(
         cfg.acl_name, cfg.src_ip, cfg.acl_ingress_interface

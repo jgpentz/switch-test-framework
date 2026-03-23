@@ -1,3 +1,4 @@
+import argparse
 import copy
 import json
 from datetime import datetime
@@ -6,6 +7,7 @@ from pathlib import Path
 from netmiko import ConnectHandler
 
 from framework.lab_secrets import load_lab_secrets
+from framework.reporting.report_generator import ReportGenerator
 from framework.tests.rfc2544 import (
     TelemetryConfig,
     back_to_back,
@@ -52,79 +54,79 @@ def on_link_failure() -> None:
         conn.send_config_set(cmds)
 
 
-def save_result(result: dict, path: str):
+def save_result(result: dict, path: Path) -> None:
     clean = copy.deepcopy(result)
     for item in clean.get("evidence", []):
         if "raw_json" in item:
             item.pop("raw_json", None)
-    with open(path, "w") as f:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
         json.dump(clean, f, indent=2)
 
 
-def run_rfc2544_tests(engine: IPerf3Engine, config: RFC2544Config) -> None:
-    # Get time in format yyyy-mm-dd-hh-mm
-    time = datetime.now().strftime("%Y-%m-%d-%H-%M")
-
+def run_rfc2544_tests(
+    engine: IPerf3Engine, config: RFC2544Config, results_dir: Path
+) -> None:
     # ----- Throughput test -----
     print("Running throughput test...")
     throughput_result = throughput(engine, "172.16.0.2", config=config)
+    save_result(throughput_result, results_dir / "throughput.json")
 
-    throughput_result_file = Path(f"results/{time}_throughput.json")
-    save_result(throughput_result, throughput_result_file)
+    # Build per-frame throughput map for latency
+    throughput_by_frame: dict[int, float] = {
+        entry["frame_size"]: entry["zero_loss_bitrate_bps"]
+        for entry in throughput_result["details"]["per_frame_size_results"]
+    }
 
     # ----- Latency test -----
     print("Running latency test...")
-    # throughput_result ={"details": {"zero_loss_bitrate_bps": 800_000_000}}
     latency_result = latency(
         engine,
         "172.16.0.2",
-        throughput_bps=throughput_result["details"]["zero_loss_bitrate_bps"],
+        throughput_results=throughput_by_frame,
         config=config,
     )
-    latency_result_file = Path(f"results/{time}_latency.json")
-    save_result(latency_result, latency_result_file)
+    save_result(latency_result, results_dir / "latency.json")
 
     # ----- Frame loss test -----
     print("Running frame loss test...")
     frame_loss_result = frame_loss(engine, "172.16.0.2", config=config)
-    frame_loss_result_file = Path(f"results/{time}_frame_loss.json")
-    save_result(frame_loss_result, frame_loss_result_file)
+    save_result(frame_loss_result, results_dir / "frame_loss.json")
 
     # ----- Back-to-back test -----
     print("Running back-to-back test...")
     back_to_back_result = back_to_back(engine, "172.16.0.2", config=config)
-    back_to_back_result_file = Path(f"results/{time}_back_to_back.json")
-    save_result(back_to_back_result, back_to_back_result_file)
+    save_result(back_to_back_result, results_dir / "back_to_back.json")
 
 
 def run_functional_tests(
-    engine: ScapyEngine, iperf3_engine: IPerf3Engine, config: FunctionalTestConfig
+    engine: ScapyEngine,
+    iperf3_engine: IPerf3Engine,
+    config: FunctionalTestConfig,
+    results_dir: Path,
 ) -> None:
-    # Get time in format yyyy-mm-dd-hh-mm
-    time = datetime.now().strftime("%Y-%m-%d-%H-%M")
-
     # ----- VLAN Isolation test -----
     print("Running VLAN Isolation test...")
     vlan_isolation_result = vlan_isolation(engine, config)
-    vlan_isolation_result_file = Path(f"results/{time}_vlan_isolation.json")
+    vlan_isolation_result_file = results_dir / "vlan_isolation.json"
     save_result(vlan_isolation_result, vlan_isolation_result_file)
 
     # ----- MAC Learning test -----
     print("Running MAC Learning test...")
     mac_learning_result = mac_learning(engine, config)
-    mac_learning_result_file = Path(f"results/{time}_mac_learning.json")
+    mac_learning_result_file = results_dir / "mac_learning.json"
     save_result(mac_learning_result, mac_learning_result_file)
 
     # ----- Jumbo Frames test -----
     print("Running Jumbo Frames test...")
     jumbo_frames_result = jumbo_frames(engine, config)
-    jumbo_frames_result_file = Path(f"results/{time}_jumbo_frames.json")
+    jumbo_frames_result_file = results_dir / "jumbo_frames.json"
     save_result(jumbo_frames_result, jumbo_frames_result_file)
 
     # ----- 802.1Q Tagging test -----
     print("Running 802.1Q Tagging test...")
     dot1q_tagging_result = dot1q_tagging(engine, config)
-    dot1q_tagging_result_file = Path(f"results/{time}_dot1q_tagging.json")
+    dot1q_tagging_result_file = results_dir / "dot1q_tagging.json"
     save_result(dot1q_tagging_result, dot1q_tagging_result_file)
 
     # ----- STP Convergence test -----
@@ -139,21 +141,41 @@ def run_functional_tests(
         config=config,
         telemetry=telemetry,
     )
-    stp_convergence_result_file = Path(f"results/{time}_stp_convergence.json")
+    stp_convergence_result_file = results_dir / "stp_convergence.json"
     save_result(stp_convergence_result, stp_convergence_result_file)
 
     # ----- ACL Enforcement test -----
     print("Running ACL Enforcement test...")
     acl_enforcement_result = acl_enforcement(engine, config)
-    acl_enforcement_result_file = Path(f"results/{time}_acl_enforcement.json")
+    acl_enforcement_result_file = results_dir / "acl_enforcement.json"
     save_result(acl_enforcement_result, acl_enforcement_result_file)
 
 
-def main() -> None:
+def generate_report(results_dir: Path) -> None:
+    output_dir = Path("reports")
+    gen = ReportGenerator(results_dir, output_dir)
+    filename = f"{results_dir.name}_report.html"
+    path = gen.generate(filename)
+    print(f"Report written to {path}")
+
+
+def latest_results_dir() -> Path:
+    results_root = Path("results")
+    dirs = sorted(
+        (d for d in results_root.iterdir() if d.is_dir()),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    if not dirs:
+        raise SystemExit("No results directories found under results/")
+    return dirs[0]
+
+
+def run_tests() -> None:
     ssh_options = ["-i", "/home/jimmy/.ssh/test-framework"]
     iperf3_engine = IPerf3Engine(ssh_options=ssh_options)
     scapy_engine = ScapyEngine(ssh_key_path="/home/jimmy/.ssh/test-framework")
-    rfc2544_config = RFC2544Config(frame_length=1472, duration_sec=5)
+    rfc2544_config = RFC2544Config(duration_sec=2)
     functional_test_config = FunctionalTestConfig(
         lab_secrets=load_lab_secrets(),
         src_ip="172.16.0.1",
@@ -163,8 +185,36 @@ def main() -> None:
         expect_tag_on_wire=False,
     )
 
-    run_rfc2544_tests(iperf3_engine, rfc2544_config)
-    run_functional_tests(scapy_engine, iperf3_engine, functional_test_config)
+    stamp = datetime.now().strftime("%Y-%m-%d-%H-%M")
+    results_dir = Path("results") / stamp
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    run_rfc2544_tests(iperf3_engine, rfc2544_config, results_dir)
+    run_functional_tests(scapy_engine, iperf3_engine, functional_test_config, results_dir)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Network Test Framework")
+    parser.add_argument(
+        "--report",
+        nargs="?",
+        const="latest",
+        default=None,
+        metavar="RESULTS_DIR",
+        help="Generate HTML report from a results directory (default: latest run)",
+    )
+    args = parser.parse_args()
+
+    if args.report is not None:
+        if args.report == "latest":
+            results_dir = latest_results_dir()
+        else:
+            results_dir = Path(args.report)
+            if not results_dir.is_dir():
+                raise SystemExit(f"Results directory not found: {results_dir}")
+        generate_report(results_dir)
+    else:
+        run_tests()
 
 
 if __name__ == "__main__":

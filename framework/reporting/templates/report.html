@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Switch Performance Test Report — {{ summary.timestamp }}</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --accent: #2563eb;
+      --green: #16a34a;
+      --red: #dc2626;
+      --amber: #d97706;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.75rem; margin-bottom: .25rem; }
+    h2 { font-size: 1.35rem; margin-top: 2.5rem; margin-bottom: 1rem; border-bottom: 2px solid var(--accent); padding-bottom: .35rem; }
+    h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: .75rem; color: var(--text-muted); }
+    .subtitle { color: var(--text-muted); margin-bottom: 1.5rem; }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    .summary-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+    }
+    .summary-card .label { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+    .summary-card .value { font-size: 1.5rem; font-weight: 700; margin-top: .25rem; }
+    .pass { color: var(--green); }
+    .fail { color: var(--red); }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; background: var(--surface); border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+    th, td { padding: .6rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: #f1f5f9; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+    tr:last-child td { border-bottom: none; }
+    .chart-container { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+    .badge { display: inline-block; padding: .15rem .5rem; border-radius: 4px; font-size: .8rem; font-weight: 600; }
+    .badge-pass { background: #dcfce7; color: var(--green); }
+    .badge-fail { background: #fee2e2; color: var(--red); }
+    .evidence-block { background: #f1f5f9; border-left: 3px solid var(--red); padding: .75rem 1rem; margin: .5rem 0 1rem; border-radius: 0 6px 6px 0; font-size: .85rem; white-space: pre-wrap; font-family: monospace; }
+    .footer { margin-top: 3rem; text-align: center; font-size: .8rem; color: var(--text-muted); }
+  </style>
+</head>
+<body>
+
+  <!-- Section 1: Executive Summary -->
+  <h1>Switch Performance Test Report</h1>
+  <p class="subtitle">Run: {{ results_dir_name }} &middot; Generated: {{ summary.timestamp }}</p>
+
+  <div class="summary-grid">
+    <div class="summary-card">
+      <div class="label">Switch</div>
+      <div class="value">{{ summary.switch_model }}</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Tests Passed</div>
+      <div class="value pass">{{ summary.passed }} / {{ summary.total }}</div>
+    </div>
+    {% if summary.failed > 0 %}
+    <div class="summary-card">
+      <div class="label">Tests Failed</div>
+      <div class="value fail">{{ summary.failed }}</div>
+    </div>
+    {% endif %}
+    {% if summary.headline_throughput_mbps is not none %}
+    <div class="summary-card">
+      <div class="label">Zero-Loss Throughput</div>
+      <div class="value">{{ summary.headline_throughput_mbps }} Mbps</div>
+    </div>
+    {% endif %}
+    <div class="summary-card">
+      <div class="label">Total Duration</div>
+      <div class="value">{{ summary.total_duration_sec }}s</div>
+    </div>
+  </div>
+
+  <!-- Section 2: RFC 2544 Benchmarks -->
+  {% if throughput_chart or frame_loss_chart or latency_rows or back_to_back_rows %}
+  <h2>RFC 2544 Benchmarks</h2>
+
+  {% if throughput_chart %}
+  <h3>Throughput</h3>
+  <div class="chart-container">
+    {{ throughput_chart }}
+  </div>
+  {% endif %}
+
+  {% if frame_loss_chart %}
+  <h3>Frame Loss Rate</h3>
+  <div class="chart-container">
+    {{ frame_loss_chart }}
+  </div>
+  {% endif %}
+
+  {% if latency_rows %}
+  <h3>Latency (Jitter)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Frame Size</th>
+        <th>Load (%)</th>
+        <th>Avg Jitter (ms)</th>
+        <th>Std Dev (ms)</th>
+        <th>Samples</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in latency_rows %}
+      <tr>
+        <td>{% if row.frame_size %}{{ row.frame_size }} B{% else %}&mdash;{% endif %}</td>
+        <td>{{ row.load_pct }}%</td>
+        <td>{{ row.jitter_ms_avg }}</td>
+        <td>{{ row.jitter_ms_std }}</td>
+        <td>{{ row.samples }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if back_to_back_rows %}
+  <h3>Back-to-Back Frames</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Frame Size</th>
+        <th>Max Burst (frames)</th>
+        <th>Avg Burst (frames)</th>
+        <th>Std Deviation</th>
+        <th>Trials</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in back_to_back_rows %}
+      <tr>
+        <td>{{ row.frame_size }} B</td>
+        <td>{{ "{:,}".format(row.max_burst_frames) }}</td>
+        <td>{{ "{:,.1f}".format(row.avg_burst_frames) }}</td>
+        <td>{{ "{:,.0f}".format(row.std_deviation) }}</td>
+        <td>{{ row.trials }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% endif %}
+
+  <!-- Section 3: Functional Tests -->
+  {% if functional_rows %}
+  <h2>Functional Tests</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Test</th>
+        <th>Result</th>
+        <th>Duration</th>
+        <th>Timestamp</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in functional_rows %}
+      <tr>
+        <td>{{ row.test }}</td>
+        <td><span class="badge {{ 'badge-pass' if row.passed else 'badge-fail' }}">{{ "PASS" if row.passed else "FAIL" }}</span></td>
+        <td>{{ row.duration_sec }}s</td>
+        <td>{{ row.timestamp }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% for row in functional_rows if not row.passed %}
+  {% if loop.first %}
+  <h3>Failed Test Evidence</h3>
+  {% endif %}
+  <p><strong>{{ row.test }}</strong></p>
+  <div class="evidence-block">{{ row.details | tojson(indent=2) }}</div>
+  {% endfor %}
+  {% endif %}
+
+  <!-- Section 4: Switch Telemetry -->
+  {% if telemetry_rows %}
+  <h2>Switch Telemetry</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Test</th>
+        <th>RX Packets</th>
+        <th>TX Packets</th>
+        <th>RX Errors</th>
+        <th>TX Errors</th>
+        <th>RX Discards</th>
+        <th>TX Discards</th>
+        <th>RX Octets</th>
+        <th>TX Octets</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in telemetry_rows %}
+      <tr>
+        <td>{{ row.test }}</td>
+        <td>{{ "{:,}".format(row.get("rx_packets", 0)) }}</td>
+        <td>{{ "{:,}".format(row.get("tx_packets", 0)) }}</td>
+        <td>{{ row.get("rx_errors", 0) }}</td>
+        <td>{{ row.get("tx_errors", 0) }}</td>
+        <td>{{ row.get("rx_discards", 0) }}</td>
+        <td>{{ row.get("tx_discards", 0) }}</td>
+        <td>{{ "{:,}".format(row.get("rx_octets", 0)) }}</td>
+        <td>{{ "{:,}".format(row.get("tx_octets", 0)) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <div class="footer">
+    Generated by Network Test Framework &middot; {{ summary.timestamp }}
+  </div>
+
+</body>
+</html>

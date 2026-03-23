@@ -19,7 +19,7 @@ from typing import Any, Generator
 from framework.telemetry.cisco_snmp import poll_interface_counters
 from framework.traffic.iperf3_engine import IPerf3Engine
 
-RFC2544_FRAME_SIZES: tuple[int, ...] = (64, 128, 256, 512, 1024, 1280, 1518)
+RFC2544_FRAME_SIZES: tuple[int, ...] = (64, 128, 256, 512, 1024, 1280, 1472, 8972)
 
 # Preamble (7) + SFD (1) + IFG (12) = 20 bytes per-frame Ethernet overhead
 _ETHERNET_OVERHEAD_BYTES = 20
@@ -55,7 +55,7 @@ class RFC2544Config:
 
     # Latency
     latency_load_pcts: tuple[int, ...] = (10, 50, 100)
-    latency_repeats_per_level: int = 20
+    latency_repeats_per_level: int = 5
 
     # Frame loss
     frame_loss_start_pct: int = 100
@@ -64,12 +64,9 @@ class RFC2544Config:
     frame_loss_bitrate_pcts: list[int] | None = field(default=None)
 
     # Back-to-back
-    back_to_back_trials: int = 50
+    back_to_back_trials: int = 10
     back_to_back_trial_duration_sec: int = 2
     back_to_back_line_rate_pct: int = 100
-
-    # Frame size (iperf3 ``-l``); None uses iperf3 default
-    frame_length: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -147,45 +144,67 @@ def throughput(
     t0 = time.monotonic()
 
     with snapshot_telemetry(telemetry) as telem:
-        low = 0.0
-        high = cfg.link_capacity_bps
-        best_zero_loss_bps = 0.0
-        trials: list[dict[str, Any]] = []
+        per_frame_size_results: list[dict[str, Any]] = []
         evidence: list[dict[str, Any]] = []
 
-        for iteration in range(cfg.throughput_max_iterations):
-            mid = (low + high) / 2
-            bitrate_str = bps_to_iperf_bitrate(mid)
+        for frame_size in RFC2544_FRAME_SIZES:
+            print(f"  Throughput @ {frame_size} B")
+            low = 0.0
+            high = cfg.link_capacity_bps
+            best_zero_loss_bps = 0.0
+            trials: list[dict[str, Any]] = []
 
-            result = engine.run_udp(
-                server_ip=server_ip,
-                bitrate=bitrate_str,
-                duration=cfg.duration_sec,
-                length=cfg.frame_length,
-                include_raw_json=True,
-            )
-            evidence.append(result)
+            for iteration in range(cfg.throughput_max_iterations):
+                mid = (low + high) / 2
+                bitrate_str = bps_to_iperf_bitrate(mid)
 
-            lost = result["lost_percent"]
-            trials.append(
+                result = engine.run_udp(
+                    server_ip=server_ip,
+                    bitrate=bitrate_str,
+                    duration=cfg.duration_sec,
+                    length=frame_size,
+                    include_raw_json=True,
+                )
+                result["frame_size"] = frame_size
+                evidence.append(result)
+
+                lost = result["lost_percent"]
+                trials.append(
+                    {
+                        "frame_size": frame_size,
+                        "iteration": iteration + 1,
+                        "offered_bitrate_bps": mid,
+                        "offered_bitrate_pct": round(mid / cfg.link_capacity_bps * 100, 4),
+                        "achieved_bitrate_bps": result["bitrate_bps"],
+                        "lost_percent": lost,
+                    }
+                )
+
+                if lost == 0.0:
+                    best_zero_loss_bps = mid
+                    low = mid
+                else:
+                    high = mid
+
+                bracket_pct = (high - low) / cfg.link_capacity_bps * 100
+                if bracket_pct <= cfg.throughput_tolerance_pct:
+                    break
+
+            per_frame_size_results.append(
                 {
-                    "iteration": iteration + 1,
-                    "offered_bitrate_bps": mid,
-                    "offered_bitrate_pct": round(mid / cfg.link_capacity_bps * 100, 4),
-                    "achieved_bitrate_bps": result["bitrate_bps"],
-                    "lost_percent": lost,
+                    "frame_size": frame_size,
+                    "zero_loss_bitrate_bps": best_zero_loss_bps,
+                    "zero_loss_bitrate_pct": round(
+                        best_zero_loss_bps / cfg.link_capacity_bps * 100, 2
+                    ),
+                    "trials": trials,
                 }
             )
 
-            if lost == 0.0:
-                best_zero_loss_bps = mid
-                low = mid
-            else:
-                high = mid
-
-            bracket_pct = (high - low) / cfg.link_capacity_bps * 100
-            if bracket_pct <= cfg.throughput_tolerance_pct:
-                break
+        best_overall = max(
+            per_frame_size_results,
+            key=lambda item: item["zero_loss_bitrate_bps"],
+        )
 
     elapsed = time.monotonic() - t0
     return {
@@ -195,11 +214,11 @@ def throughput(
         "duration_sec": round(elapsed, 3),
         "switch_counter_delta": telem["switch_counter_delta"],
         "details": {
-            "zero_loss_bitrate_bps": best_zero_loss_bps,
-            "zero_loss_bitrate_pct": round(
-                best_zero_loss_bps / cfg.link_capacity_bps * 100, 2
-            ),
-            "trials": trials,
+            "best_frame_size": best_overall["frame_size"],
+            "zero_loss_bitrate_bps": best_overall["zero_loss_bitrate_bps"],
+            "zero_loss_bitrate_pct": best_overall["zero_loss_bitrate_pct"],
+            "trials": best_overall["trials"],
+            "per_frame_size_results": per_frame_size_results,
         },
         "evidence": evidence,
     }
@@ -213,46 +232,67 @@ def throughput(
 def latency(
     engine: IPerf3Engine,
     server_ip: str,
-    throughput_bps: float,
+    throughput_results: dict[int, float],
     config: RFC2544Config | None = None,
     telemetry: TelemetryConfig | None = None,
 ) -> dict[str, Any]:
-    """RFC 2544 latency — jitter at fractions of zero-loss throughput.
+    """RFC 2544 latency — jitter per frame size at that size's throughput rate.
 
-    Runs ``latency_repeats_per_level`` trials at each load level in
-    ``latency_load_pcts`` and reports average and standard deviation.
+    *throughput_results* maps frame size to zero-loss bitrate (bps).  For each
+    frame size the test runs ``latency_repeats_per_level`` trials at each load
+    level in ``latency_load_pcts``.
     """
     cfg = config or RFC2544Config()
     t0 = time.monotonic()
 
     with snapshot_telemetry(telemetry) as telem:
-        results: list[dict[str, Any]] = []
+        per_frame_size_results: list[dict[str, Any]] = []
         evidence: list[dict[str, Any]] = []
 
-        for load_pct in cfg.latency_load_pcts:
-            target_bps = throughput_bps * load_pct / 100
-            bitrate_str = bps_to_iperf_bitrate(target_bps)
+        for frame_size in RFC2544_FRAME_SIZES:
+            throughput_bps = throughput_results.get(frame_size, 0.0)
+            if throughput_bps <= 0:
+                continue
+            print(f"  Latency @ {frame_size} B  (throughput {throughput_bps/1e6:.1f} Mbps)")
 
-            jitter_samples: list[float] = []
-            for _ in range(cfg.latency_repeats_per_level):
-                result = engine.run_udp(
-                    server_ip=server_ip,
-                    bitrate=bitrate_str,
-                    duration=cfg.duration_sec,
-                    length=cfg.frame_length,
-                    include_raw_json=True,
+            load_results: list[dict[str, Any]] = []
+            for load_pct in cfg.latency_load_pcts:
+                target_bps = throughput_bps * load_pct / 100
+                bitrate_str = bps_to_iperf_bitrate(target_bps)
+
+                jitter_samples: list[float] = []
+                for _ in range(cfg.latency_repeats_per_level):
+                    result = engine.run_udp(
+                        server_ip=server_ip,
+                        bitrate=bitrate_str,
+                        duration=cfg.duration_sec,
+                        length=frame_size,
+                        include_raw_json=True,
+                    )
+                    result["frame_size"] = frame_size
+                    evidence.append(result)
+                    jitter_samples.append(result["jitter_ms"])
+
+                avg = statistics.mean(jitter_samples)
+                std = (
+                    statistics.stdev(jitter_samples)
+                    if len(jitter_samples) > 1
+                    else 0.0
                 )
-                evidence.append(result)
-                jitter_samples.append(result["jitter_ms"])
+                load_results.append(
+                    {
+                        "load_pct": load_pct,
+                        "jitter_ms_avg": round(avg, 6),
+                        "jitter_ms_std": round(std, 6),
+                        "jitter_ms_samples": jitter_samples,
+                    }
+                )
 
-            avg = statistics.mean(jitter_samples)
-            std = statistics.stdev(jitter_samples) if len(jitter_samples) > 1 else 0.0
-            results.append(
+            per_frame_size_results.append(
                 {
-                    "load_pct": load_pct,
-                    "jitter_ms_avg": round(avg, 6),
-                    "jitter_ms_std": round(std, 6),
-                    "jitter_ms_samples": jitter_samples,
+                    "frame_size": frame_size,
+                    "throughput_bps": throughput_bps,
+                    "results": load_results,
                 }
             )
 
@@ -263,7 +303,7 @@ def latency(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "duration_sec": round(elapsed, 3),
         "switch_counter_delta": telem["switch_counter_delta"],
-        "details": {"results": results},
+        "details": {"per_frame_size_results": per_frame_size_results},
         "evidence": evidence,
     }
 
@@ -279,11 +319,11 @@ def frame_loss(
     config: RFC2544Config | None = None,
     telemetry: TelemetryConfig | None = None,
 ) -> dict[str, Any]:
-    """RFC 2544 frame loss — loss curve from 100 % down in 10 % steps.
+    """RFC 2544 frame loss — loss curve per frame size.
 
-    Stops after ``frame_loss_stop_after_zero_steps`` consecutive zero-loss
-    results.  If ``frame_loss_bitrate_pcts`` is set, uses that list instead
-    of the generated step sequence.
+    Runs the stepwise sweep independently for each frame size in
+    ``RFC2544_FRAME_SIZES``.  Stops each sweep after
+    ``frame_loss_stop_after_zero_steps`` consecutive zero-loss results.
     """
     cfg = config or RFC2544Config()
     t0 = time.monotonic()
@@ -300,39 +340,51 @@ def frame_loss(
         )
 
     with snapshot_telemetry(telemetry) as telem:
-        results: list[dict[str, Any]] = []
+        per_frame_size_results: list[dict[str, Any]] = []
         evidence: list[dict[str, Any]] = []
-        consecutive_zero = 0
 
-        for pct in pct_steps:
-            target_bps = cfg.link_capacity_bps * pct / 100
-            bitrate_str = bps_to_iperf_bitrate(target_bps)
+        for frame_size in RFC2544_FRAME_SIZES:
+            print(f"  Frame loss @ {frame_size} B")
+            sweep_results: list[dict[str, Any]] = []
+            consecutive_zero = 0
 
-            result = engine.run_udp(
-                server_ip=server_ip,
-                bitrate=bitrate_str,
-                duration=cfg.duration_sec,
-                length=cfg.frame_length,
-                include_raw_json=True,
-            )
-            evidence.append(result)
+            for pct in pct_steps:
+                target_bps = cfg.link_capacity_bps * pct / 100
+                bitrate_str = bps_to_iperf_bitrate(target_bps)
 
-            loss_pct = result["lost_percent"]
-            results.append(
+                result = engine.run_udp(
+                    server_ip=server_ip,
+                    bitrate=bitrate_str,
+                    duration=cfg.duration_sec,
+                    length=frame_size,
+                    include_raw_json=True,
+                )
+                result["frame_size"] = frame_size
+                evidence.append(result)
+
+                loss_pct = result["lost_percent"]
+                sweep_results.append(
+                    {
+                        "bitrate_pct": pct,
+                        "bitrate_bps": target_bps,
+                        "loss_pct": loss_pct,
+                    }
+                )
+
+                if loss_pct == 0.0:
+                    consecutive_zero += 1
+                else:
+                    consecutive_zero = 0
+
+                if consecutive_zero >= cfg.frame_loss_stop_after_zero_steps:
+                    break
+
+            per_frame_size_results.append(
                 {
-                    "bitrate_pct": pct,
-                    "bitrate_bps": target_bps,
-                    "loss_pct": loss_pct,
+                    "frame_size": frame_size,
+                    "results": sweep_results,
                 }
             )
-
-            if loss_pct == 0.0:
-                consecutive_zero += 1
-            else:
-                consecutive_zero = 0
-
-            if consecutive_zero >= cfg.frame_loss_stop_after_zero_steps:
-                break
 
     elapsed = time.monotonic() - t0
     return {
@@ -341,7 +393,7 @@ def frame_loss(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "duration_sec": round(elapsed, 3),
         "switch_counter_delta": telem["switch_counter_delta"],
-        "details": {"results": results},
+        "details": {"per_frame_size_results": per_frame_size_results},
         "evidence": evidence,
     }
 
@@ -357,56 +409,63 @@ def back_to_back(
     config: RFC2544Config | None = None,
     telemetry: TelemetryConfig | None = None,
 ) -> dict[str, Any]:
-    """RFC 2544 back-to-back — burst absorption at line rate.
+    """RFC 2544 back-to-back — burst absorption at line rate per frame size.
 
-    Runs ``back_to_back_trials`` UDP trials at line rate for
-    ``back_to_back_trial_duration_sec`` seconds each.  Frame count is
-    *estimated* from achieved bitrate and frame size — not exact
-    wire-level counting.
+    Runs ``back_to_back_trials`` UDP trials at line rate for each frame size
+    in ``RFC2544_FRAME_SIZES``.  Frame count is *estimated* from achieved
+    bitrate and frame size.
     """
     cfg = config or RFC2544Config()
     t0 = time.monotonic()
 
     line_rate_bps = cfg.link_capacity_bps * cfg.back_to_back_line_rate_pct / 100
     bitrate_str = bps_to_iperf_bitrate(line_rate_bps)
-    frame_size = cfg.frame_length or 1518
-    bytes_per_frame = frame_size + _ETHERNET_OVERHEAD_BYTES
 
     with snapshot_telemetry(telemetry) as telem:
+        per_frame_size_results: list[dict[str, Any]] = []
         evidence: list[dict[str, Any]] = []
-        burst_frames: list[int] = []
 
-        for _ in range(cfg.back_to_back_trials):
-            result = engine.run_udp(
-                server_ip=server_ip,
-                bitrate=bitrate_str,
-                duration=cfg.back_to_back_trial_duration_sec,
-                length=cfg.frame_length,
-                include_raw_json=True,
+        for frame_size in RFC2544_FRAME_SIZES:
+            print(f"  Back-to-back @ {frame_size} B")
+            bytes_per_frame = frame_size + _ETHERNET_OVERHEAD_BYTES
+            burst_frames: list[int] = []
+
+            for _ in range(cfg.back_to_back_trials):
+                result = engine.run_udp(
+                    server_ip=server_ip,
+                    bitrate=bitrate_str,
+                    duration=cfg.back_to_back_trial_duration_sec,
+                    length=frame_size,
+                    include_raw_json=True,
+                )
+                result["frame_size"] = frame_size
+                evidence.append(result)
+
+                total_bits = result["bitrate_bps"] * result["duration_sec"]
+                total_frames = int(total_bits / 8 / bytes_per_frame)
+                no_loss_frames = max(0, total_frames - result["lost_packets"])
+                burst_frames.append(no_loss_frames)
+
+            avg = statistics.mean(burst_frames) if burst_frames else 0.0
+            std = statistics.stdev(burst_frames) if len(burst_frames) > 1 else 0.0
+
+            per_frame_size_results.append(
+                {
+                    "frame_size": frame_size,
+                    "max_burst_frames": max(burst_frames) if burst_frames else 0,
+                    "avg_burst_frames": round(avg, 1),
+                    "std_deviation": round(std, 1),
+                    "trials": cfg.back_to_back_trials,
+                }
             )
-            evidence.append(result)
-
-            total_bits = result["bitrate_bps"] * result["duration_sec"]
-            total_frames = int(total_bits / 8 / bytes_per_frame)
-            no_loss_frames = max(0, total_frames - result["lost_packets"])
-            burst_frames.append(no_loss_frames)
 
     elapsed = time.monotonic() - t0
-    avg = statistics.mean(burst_frames) if burst_frames else 0.0
-    std = statistics.stdev(burst_frames) if len(burst_frames) > 1 else 0.0
-
     return {
         "test": "back_to_back",
         "passed": True,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "duration_sec": round(elapsed, 3),
         "switch_counter_delta": telem["switch_counter_delta"],
-        "details": {
-            "max_burst_frames": max(burst_frames) if burst_frames else 0,
-            "avg_burst_frames": round(avg, 1),
-            "trials": cfg.back_to_back_trials,
-            "std_deviation": round(std, 1),
-            "frame_size": frame_size,
-        },
+        "details": {"per_frame_size_results": per_frame_size_results},
         "evidence": evidence,
     }

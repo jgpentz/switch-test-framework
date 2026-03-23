@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from framework.tests.rfc2544 import (
+    RFC2544_FRAME_SIZES,
     RFC2544Config,
     back_to_back,
     bps_to_iperf_bitrate,
@@ -173,7 +174,10 @@ def test_throughput_converges(link_capacity_bps: float) -> None:
     assert details["zero_loss_bitrate_bps"] > 0
     assert 70 < details["zero_loss_bitrate_pct"] < 85
     assert len(details["trials"]) > 0
-    assert len(result["evidence"]) == len(details["trials"])
+    assert len(details["per_frame_size_results"]) == len(RFC2544_FRAME_SIZES)
+    assert len(result["evidence"]) >= len(details["trials"])
+    frame_sizes = {item["frame_size"] for item in details["per_frame_size_results"]}
+    assert frame_sizes == set(RFC2544_FRAME_SIZES)
 
 
 def test_throughput_zero_loss_everywhere() -> None:
@@ -188,6 +192,7 @@ def test_throughput_zero_loss_everywhere() -> None:
     result = throughput(engine, "172.16.0.2", config=cfg)
 
     assert result["details"]["zero_loss_bitrate_pct"] > 95
+    assert result["details"]["best_frame_size"] in RFC2544_FRAME_SIZES
 
 
 # ---------------------------------------------------------------------------
@@ -195,24 +200,32 @@ def test_throughput_zero_loss_everywhere() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_latency_structure() -> None:
+def test_latency_per_frame_structure() -> None:
     engine = _make_mock_engine(jitter_ms=0.020)
     cfg = RFC2544Config(
         duration_sec=1,
         latency_load_pcts=(10, 50, 100),
         latency_repeats_per_level=3,
     )
+    throughput_map = {fs: 800_000_000 for fs in RFC2544_FRAME_SIZES}
 
-    result = latency(engine, "172.16.0.2", throughput_bps=800_000_000, config=cfg)
+    result = latency(engine, "172.16.0.2", throughput_results=throughput_map, config=cfg)
 
     assert result["test"] == "latency"
-    assert len(result["details"]["results"]) == 3
-    for level in result["details"]["results"]:
-        assert level["load_pct"] in (10, 50, 100)
-        assert level["jitter_ms_avg"] == pytest.approx(0.020, abs=0.001)
-        assert len(level["jitter_ms_samples"]) == 3
-    # 3 load levels × 3 repeats = 9 total engine calls
-    assert len(result["evidence"]) == 9
+    per_frame = result["details"]["per_frame_size_results"]
+    assert len(per_frame) == len(RFC2544_FRAME_SIZES)
+    frame_sizes = {entry["frame_size"] for entry in per_frame}
+    assert frame_sizes == set(RFC2544_FRAME_SIZES)
+
+    for entry in per_frame:
+        assert len(entry["results"]) == 3
+        for level in entry["results"]:
+            assert level["load_pct"] in (10, 50, 100)
+            assert level["jitter_ms_avg"] == pytest.approx(0.020, abs=0.001)
+            assert len(level["jitter_ms_samples"]) == 3
+
+    expected_evidence = len(RFC2544_FRAME_SIZES) * 3 * 3
+    assert len(result["evidence"]) == expected_evidence
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +233,8 @@ def test_latency_structure() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_frame_loss_stops_after_two_zero() -> None:
-    """Should stop after two successive zero-loss steps."""
+def test_frame_loss_per_frame_structure() -> None:
+    """Each frame size should get its own sweep with early-stop."""
     engine = _make_mock_engine(
         loss_threshold_bps=750_000_000, loss_above_threshold_pct=3.0
     )
@@ -235,16 +248,21 @@ def test_frame_loss_stops_after_two_zero() -> None:
     result = frame_loss(engine, "172.16.0.2", config=cfg)
 
     assert result["test"] == "frame_loss"
-    steps = result["details"]["results"]
-    # 100 %→loss, 90 %→loss, 80 %→loss, 70 %→0, 60 %→0 → stop
-    loss_values = [s["loss_pct"] for s in steps]
-    assert loss_values[-1] == 0.0
-    assert loss_values[-2] == 0.0
-    assert len(steps) < 10
+    per_frame = result["details"]["per_frame_size_results"]
+    assert len(per_frame) == len(RFC2544_FRAME_SIZES)
+    frame_sizes = {entry["frame_size"] for entry in per_frame}
+    assert frame_sizes == set(RFC2544_FRAME_SIZES)
+
+    for entry in per_frame:
+        steps = entry["results"]
+        loss_values = [s["loss_pct"] for s in steps]
+        assert loss_values[-1] == 0.0
+        assert loss_values[-2] == 0.0
+        assert len(steps) < 10
 
 
 def test_frame_loss_custom_pcts() -> None:
-    """Override ``frame_loss_bitrate_pcts`` replaces generated steps."""
+    """Override ``frame_loss_bitrate_pcts`` replaces generated steps per frame."""
     engine = _make_mock_engine(loss_threshold_bps=500_000_000)
     cfg = RFC2544Config(
         link_capacity_bps=1_000_000_000,
@@ -255,9 +273,10 @@ def test_frame_loss_custom_pcts() -> None:
 
     result = frame_loss(engine, "172.16.0.2", config=cfg)
 
-    pcts = [s["bitrate_pct"] for s in result["details"]["results"]]
-    # 80 %→loss; 40 %→0; 20 %→0 → stop
-    assert pcts == [80, 40, 20]
+    per_frame = result["details"]["per_frame_size_results"]
+    for entry in per_frame:
+        pcts = [s["bitrate_pct"] for s in entry["results"]]
+        assert pcts == [80, 40, 20]
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +284,7 @@ def test_frame_loss_custom_pcts() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_back_to_back_structure() -> None:
+def test_back_to_back_per_frame_structure() -> None:
     engine = _make_mock_engine(loss_threshold_bps=2_000_000_000)
     cfg = RFC2544Config(
         link_capacity_bps=1_000_000_000,
@@ -277,30 +296,14 @@ def test_back_to_back_structure() -> None:
     result = back_to_back(engine, "172.16.0.2", config=cfg)
 
     assert result["test"] == "back_to_back"
-    d = result["details"]
-    assert d["trials"] == 5
-    assert d["max_burst_frames"] > 0
-    assert d["avg_burst_frames"] > 0
-    assert d["frame_size"] == 1518
-    assert len(result["evidence"]) == 5
+    per_frame = result["details"]["per_frame_size_results"]
+    assert len(per_frame) == len(RFC2544_FRAME_SIZES)
+    frame_sizes = {entry["frame_size"] for entry in per_frame}
+    assert frame_sizes == set(RFC2544_FRAME_SIZES)
 
+    for entry in per_frame:
+        assert entry["trials"] == 5
+        assert entry["max_burst_frames"] > 0
+        assert entry["avg_burst_frames"] > 0
 
-@pytest.mark.parametrize(
-    "frame_length",
-    [64, 512, 1518],
-    ids=["64B", "512B", "1518B"],
-)
-def test_back_to_back_respects_frame_length(frame_length: int) -> None:
-    engine = _make_mock_engine(loss_threshold_bps=2_000_000_000)
-    cfg = RFC2544Config(
-        link_capacity_bps=1_000_000_000,
-        duration_sec=1,
-        back_to_back_trials=3,
-        back_to_back_trial_duration_sec=2,
-        frame_length=frame_length,
-    )
-
-    result = back_to_back(engine, "172.16.0.2", config=cfg)
-
-    assert result["details"]["frame_size"] == frame_length
-    assert result["details"]["max_burst_frames"] > 0
+    assert len(result["evidence"]) == len(RFC2544_FRAME_SIZES) * 5
